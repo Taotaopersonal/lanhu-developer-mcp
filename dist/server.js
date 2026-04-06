@@ -578,6 +578,68 @@ class LanhuMcpServer {
                 return { content: [{ type: "text", text: `获取设计图列表出错: ${error}` }] };
             }
         });
+        // ===== get_lanhu_sector_designs: 获取分组下的设计图列表 =====
+        this.server.tool("get_lanhu_sector_designs", "获取蓝湖项目指定分组(sector)下的设计图列表。传 sector_name='all' 可列出所有分组概览", {
+            project_id: zod_1.z.string().describe("蓝湖项目ID，URL参数 project_id=<id> 或 pid=<id>"),
+            team_id: zod_1.z.string().optional().describe("团队ID，URL参数 tid=<id>。不传默认空字符串"),
+            sector_name: zod_1.z.string().describe("分组名称。传 'all' 列出所有分组概览，传具体名称如 '莓好时光' 获取该分组下的设计图")
+        }, async ({ project_id, team_id, sector_name }) => {
+            try {
+                const axios = (await import('axios')).default;
+                const tidParam = team_id || '';
+                // 1. 获取分组列表
+                console.log("[蓝湖MCP] 正在获取分组列表...");
+                const sectorsResp = await axios.get('https://lanhuapp.com/api/project/project_sectors', {
+                    params: { project_id },
+                    headers: { 'Cookie': this.token }
+                });
+                if (sectorsResp.data.code !== '00000') {
+                    return { content: [{ type: "text", text: `蓝湖API错误: ${sectorsResp.data.msg || 'Unknown'}` }] };
+                }
+                const sectors = (sectorsResp.data.data || {}).sectors || [];
+                if (sectors.length === 0) {
+                    return { content: [{ type: "text", text: '该项目没有分组' }] };
+                }
+                // 传 'all' 时返回分组概览
+                if (sector_name.trim().toLowerCase() === 'all') {
+                    const overview = sectors.map(s => ({ name: s.name, design_count: (s.images || []).length }));
+                    return { content: [{ type: "text", text: JSON.stringify({ status: 'success', project_id, total_sectors: sectors.length, sectors: overview }, null, 2) }] };
+                }
+                // 2. 查找目标分组
+                const target = sectors.find(s => s.name === sector_name);
+                if (!target) {
+                    const available = sectors.map(s => s.name);
+                    return { content: [{ type: "text", text: JSON.stringify({ status: 'error', message: `分组 "${sector_name}" 未找到`, available_sectors: available }, null, 2) }] };
+                }
+                const imageIds = target.images || [];
+                if (imageIds.length === 0) {
+                    return { content: [{ type: "text", text: JSON.stringify({ status: 'success', sector_name, total_designs: 0, designs: [] }, null, 2) }] };
+                }
+                // 3. 获取全量设计图列表以匹配 name
+                console.log("[蓝湖MCP] 正在获取设计图列表以匹配分组...");
+                const imagesResp = await axios.get('https://lanhuapp.com/api/project/images', {
+                    params: { project_id, team_id: tidParam, dds_status: 1, position: 1, show_cb_src: 1, comment: 1 },
+                    headers: { 'Cookie': this.token }
+                });
+                const allImages = (imagesResp.data.data || {}).images || [];
+                const idToDesign = {};
+                allImages.forEach(img => { idToDesign[img.id] = img; });
+                // 4. 构建结果
+                const designList = imageIds.map(imgId => {
+                    const design = idToDesign[imgId];
+                    return {
+                        id: imgId,
+                        name: design ? design.name : imgId,
+                        url: `https://lanhuapp.com/web/#/item/project/detailDetach?tid=${tidParam}&pid=${project_id}&image_id=${imgId}&project_id=${project_id}&fromEditor=true&type=image`,
+                        preview_url: design ? design.url : null
+                    };
+                });
+                console.log(`[蓝湖MCP] 分组 "${sector_name}" 下找到 ${designList.length} 个设计图`);
+                return { content: [{ type: "text", text: JSON.stringify({ status: 'success', sector_name, total_designs: designList.length, designs: designList }, null, 2) }] };
+            } catch (error) {
+                return { content: [{ type: "text", text: `获取分组设计图出错: ${error}` }] };
+            }
+        });
         // ===== get_lanhu_preview: 下载设计图预览大图 =====
         this.server.tool("get_lanhu_preview", "下载蓝湖设计图的预览大图（preview.png）到本地，用于查看完整设计效果", {
             project_id: zod_1.z.string().describe("蓝湖项目ID"),
