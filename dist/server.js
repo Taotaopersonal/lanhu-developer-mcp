@@ -445,8 +445,12 @@ class LanhuMcpServer {
             download_dir: zod_1.z
                 .string()
                 .optional()
-                .describe("自定义图片下载目录（相对于项目根目录），如 'src/assets/MyDesign'。不传则使用默认目录。如果目录已存在会自动创建带数字后缀的子目录以支持并行下载")
-        }, async ({ project_id, image_id, download_dir }) => {
+                .describe("自定义图片下载目录（相对于项目根目录），如 'src/assets/MyDesign'。不传则使用默认目录。如果目录已存在会自动创建带数字后缀的子目录以支持并行下载"),
+            includes: zod_1.z
+                .array(zod_1.z.enum(['json', 'slices']))
+                .optional()
+                .describe("控制下载内容。默认不传等同于 ['json','slices'] 全部下载。传 ['json'] 则只下载标注数据不下载切图。可选值: json(标注数据), slices(切图)")
+        }, async ({ project_id, image_id, download_dir, includes }) => {
             try {
                 exports.Logger.log(`获取蓝湖数据开始`);
                 console.log("[蓝湖MCP] 正在请求蓝湖API...");
@@ -476,39 +480,46 @@ class LanhuMcpServer {
                     : path.join(rootDir, baseRelDir);
                 // 并行安全：getAvailableDir 会原子创建目录，避免竞态条件
                 const actualDownloadDir = this.getAvailableDir(targetDir);
-                try {
-                    const imgMap = this.extractImageUrls(jsonResponse.data);
-                    const jsonStr = JSON.stringify(jsonResponse.data);
-                    const strImgMap = this.extractImageUrlsFromString(jsonStr);
-                    strImgMap.forEach((name, url) => { if (!imgMap.has(url)) imgMap.set(url, name); });
-                    const totalImages = imgMap.size;
-                    console.log(`[蓝湖MCP] 找到 ${totalImages} 张图片素材`);
-                    if (totalImages > 0) {
-                        console.log(`[蓝湖MCP] 开始下载图片到: ${actualDownloadDir}`);
-                        let successCount = 0;
-                        let failCount = 0;
-                        let currentIndex = 0;
-                        const downloadPromises = Array.from(imgMap.entries()).map(async ([imgUrl, layerName]) => {
-                            try {
-                                currentIndex++;
-                                console.log(`[蓝湖MCP] 开始下载第 ${currentIndex}/${totalImages} 张图片...`);
-                                const filePath = await this.downloadImage(imgUrl, actualDownloadDir, layerName);
-                                const relativePath = this.getRelativePath(filePath, rootDir, actualDownloadDir);
-                                urlMap.set(imgUrl, relativePath);
-                                successCount++;
-                                return { success: true, url: imgUrl, path: filePath };
-                            }
-                            catch (error) {
-                                failCount++;
-                                return { success: false, url: imgUrl, error };
-                            }
-                        });
-                        await Promise.all(downloadPromises);
-                        console.log(`[蓝湖MCP] 图片下载完成，成功: ${successCount}，失败: ${failCount}`);
+                // 判断是否需要下载切图：默认全部下载，传了 includes 且不含 'slices' 则跳过
+                const shouldDownloadSlices = !includes || includes.length === 0 || includes.includes('slices');
+                if (shouldDownloadSlices) {
+                    try {
+                        const imgMap = this.extractImageUrls(jsonResponse.data);
+                        const jsonStr = JSON.stringify(jsonResponse.data);
+                        const strImgMap = this.extractImageUrlsFromString(jsonStr);
+                        strImgMap.forEach((name, url) => { if (!imgMap.has(url)) imgMap.set(url, name); });
+                        const totalImages = imgMap.size;
+                        console.log(`[蓝湖MCP] 找到 ${totalImages} 张图片素材`);
+                        if (totalImages > 0) {
+                            console.log(`[蓝湖MCP] 开始下载图片到: ${actualDownloadDir}`);
+                            let successCount = 0;
+                            let failCount = 0;
+                            let currentIndex = 0;
+                            const downloadPromises = Array.from(imgMap.entries()).map(async ([imgUrl, layerName]) => {
+                                try {
+                                    currentIndex++;
+                                    console.log(`[蓝湖MCP] 开始下载第 ${currentIndex}/${totalImages} 张图片...`);
+                                    const filePath = await this.downloadImage(imgUrl, actualDownloadDir, layerName);
+                                    const relativePath = this.getRelativePath(filePath, rootDir, actualDownloadDir);
+                                    urlMap.set(imgUrl, relativePath);
+                                    successCount++;
+                                    return { success: true, url: imgUrl, path: filePath };
+                                }
+                                catch (error) {
+                                    failCount++;
+                                    return { success: false, url: imgUrl, error };
+                                }
+                            });
+                            await Promise.all(downloadPromises);
+                            console.log(`[蓝湖MCP] 图片下载完成，成功: ${successCount}，失败: ${failCount}`);
+                        }
                     }
-                }
-                catch (error) {
-                    console.error("[蓝湖MCP] 图片下载过程中出错:", error);
+                    catch (error) {
+                        console.error("[蓝湖MCP] 图片下载过程中出错:", error);
+                    }
+                } else {
+                    console.log("[蓝湖MCP] 跳过切图下载（includes 不含 slices）");
+                    if (!fs.existsSync(actualDownloadDir)) fs.mkdirSync(actualDownloadDir, { recursive: true });
                 }
                 console.log("[蓝湖MCP] 数据获取成功，正在处理返回结果...");
                 console.log("[蓝湖MCP] 替换图片URL为本地路径...");
@@ -659,11 +670,14 @@ class LanhuMcpServer {
                     return { content: [{ type: "text", text: `蓝湖API错误: ${resp.data.msg || 'Unknown'}` }] };
                 }
                 const images = (resp.data.data || {}).images || [];
+                console.log(`[蓝湖MCP] 项目共 ${images.length} 个设计图`);
                 let targets = images;
                 // 优先用 ID 筛选（精确，无重名问题）
                 if (design_ids && design_ids.trim()) {
                     const idSet = new Set(design_ids.split(',').map(n => n.trim()));
+                    console.log(`[蓝湖MCP] 按 ID 筛选，传入 ${idSet.size} 个 ID`);
                     targets = images.filter(img => idSet.has(img.id));
+                    console.log(`[蓝湖MCP] 匹配到 ${targets.length} 个设计图`);
                     if (targets.length === 0) {
                         return { content: [{ type: "text", text: `未找到匹配的设计图ID。` }] };
                     }
