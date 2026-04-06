@@ -644,9 +644,10 @@ class LanhuMcpServer {
         this.server.tool("get_lanhu_preview", "下载蓝湖设计图的预览大图（preview.png）到本地，用于查看完整设计效果", {
             project_id: zod_1.z.string().describe("蓝湖项目ID"),
             team_id: zod_1.z.string().optional().describe("团队ID，不传默认空字符串"),
-            design_names: zod_1.z.string().optional().describe("要下载的设计图名称，逗号分隔多个。传 'all' 或不传则下载全部。名称需与 get_lanhu_designs 返回的 name 完全一致"),
+            design_names: zod_1.z.string().optional().describe("要下载的设计图名称，逗号分隔。传 'all' 或不传则下载全部。注意：有重名时请用 design_ids 代替"),
+            design_ids: zod_1.z.string().optional().describe("要下载的设计图ID，逗号分隔。优先级高于 design_names，用于精确筛选（避免重名问题）。ID 从 get_lanhu_sector_designs 或 get_lanhu_designs 获取"),
             download_dir: zod_1.z.string().optional().describe("下载目录（相对于项目根目录），如 'view/activity/xxx/design-assets'。不传则用默认目录")
-        }, async ({ project_id, team_id, design_names, download_dir }) => {
+        }, async ({ project_id, team_id, design_names, design_ids, download_dir }) => {
             try {
                 console.log("[蓝湖MCP] 正在获取设计图列表...");
                 const axios = (await import('axios')).default;
@@ -659,7 +660,14 @@ class LanhuMcpServer {
                 }
                 const images = (resp.data.data || {}).images || [];
                 let targets = images;
-                if (design_names && design_names.toLowerCase() !== 'all') {
+                // 优先用 ID 筛选（精确，无重名问题）
+                if (design_ids && design_ids.trim()) {
+                    const idSet = new Set(design_ids.split(',').map(n => n.trim()));
+                    targets = images.filter(img => idSet.has(img.id));
+                    if (targets.length === 0) {
+                        return { content: [{ type: "text", text: `未找到匹配的设计图ID。` }] };
+                    }
+                } else if (design_names && design_names.toLowerCase() !== 'all') {
                     const nameSet = new Set(design_names.split(',').map(n => n.trim()));
                     targets = images.filter(img => nameSet.has(img.name));
                     if (targets.length === 0) {

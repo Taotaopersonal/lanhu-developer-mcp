@@ -1,6 +1,6 @@
 {
   "name": "@kang_tao/lanhu-developer-mcp",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Enhanced MCP server for Lanhu integration - supports custom download directory and parallel downloads",
   "main": "dist/index.js",
   "bin": {
